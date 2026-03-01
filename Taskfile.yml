@@ -1,0 +1,101 @@
+version: '3'
+
+dotenv: ['.env']
+
+vars:
+  DB_IMAGE: csv-to-db
+  COMPOSE_FILE: compose.yml
+
+tasks:
+
+  # Setup
+  setup:
+    desc: "First time setup - build everything"
+    cmds:
+      - task: build
+      - task: db-load
+
+  # Database
+  db-load:
+    desc: "Load all CSV files into Postgres (run once)"
+    cmds:
+      - docker build -f dockerfiles/csv_to_db.Dockerfile -t {{.DB_IMAGE}} .
+      - docker run --rm
+          -v ./csvs:/app/csvs
+          -e DB_HOST=host.docker.internal
+          -e DB_NAME={{.DB_NAME}}
+          -e DB_USER={{.DB_USER}}
+          -e DB_PASS={{.DB_PASS}}
+          {{.DB_IMAGE}}
+
+  db-connect:
+    desc: "Connect to Postgres via psql"
+    cmds:
+      - psql -h localhost -U {{.DB_USER}} -d {{.DB_NAME}}
+
+  db-tables:
+    desc: "List all tables in the database"
+    cmds:
+      - psql -h localhost -U {{.DB_USER}} -d {{.DB_NAME}} -c "\dt"
+
+  # Docker Compose
+  build:
+    desc: "Build all Docker images"
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} build
+
+  up:
+    desc: "Start all services (Kafka, Spark, Producer, Streaming)"
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} up -d
+
+  down:
+    desc: "Stop all services"
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} down
+
+  restart:
+    desc: "Restart all services"
+    cmds:
+      - task: down
+      - task: up
+
+  # Logs
+  logs:
+    desc: "Show logs for all services"
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} logs -f
+
+  logs-producer:
+    desc: "Show producer logs"
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} logs -f producer-app
+
+  logs-spark:
+    desc: "Show spark streaming logs"
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} logs -f streaming-app
+
+  logs-kafka:
+    desc: "Show kafka logs"
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} logs -f kafka
+
+  # Status
+  status:
+    desc: "Show status of all containers"
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} ps
+
+  # Cleanup 
+  clean:
+    desc: "Stop services and remove volumes"
+    prompt: "This will delete all Kafka and Zookeeper data. Continue?"
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} down -v
+
+  clean-checkpoints:
+    desc: "Delete Spark checkpoints (use if restreaming from scratch)"
+    prompt: "This will delete all checkpoints. Duplicate data may occur. Continue?"
+    cmds:
+      - rm -rf ./checkpoints/*
