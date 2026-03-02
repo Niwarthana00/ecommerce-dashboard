@@ -71,9 +71,9 @@ tasks:
 
 
   db-source:
-    desc: "Connect to source DB (niwa)"
+    desc: "Connect to source DB ({{.DB_NAME}})"
     cmds:
-      - psql -h localhost -U {{.DB_USER}} -d niwa
+      - psql -h localhost -U {{.DB_USER}} -d {{.DB_NAME}}
 
   db-silver:
     desc: "Connect to silver DB (ecommerce_db)"
