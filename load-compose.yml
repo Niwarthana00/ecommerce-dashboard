@@ -1,0 +1,15 @@
+services:
+  csv-to-db:
+    build:
+      context: .
+      dockerfile: dockerfiles/csv_to_db.Dockerfile
+    env_file:
+      - .env
+    environment:
+      - DB_USER=${DB_USER}
+      - DB_PASS=${DB_PASS}
+      - DB_HOST=${DB_HOST}
+      - DB_NAME=${DB_NAME}
+    volumes:
+      - ./csvs:/app/csvs
+
