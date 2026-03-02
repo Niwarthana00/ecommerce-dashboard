@@ -9,12 +9,36 @@ services:
     volumes:
       - zookeeper-data:/var/lib/zookeeper/data
       - zookeeper-log:/var/lib/zookeeper/log
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  kafka-init:
+    image: confluentinc/cp-zookeeper:latest
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    networks:
+      - app-network
+    entrypoint:
+      - sh
+      - -c
+      - |
+          echo 'Clearing stale Kafka broker registration...'
+          zookeeper-shell zookeeper:2181 rmr /brokers/ids/1 || true
+          echo 'Done.'
 
   kafka:
     image: confluentinc/cp-kafka:7.9.0
     hostname: kafka
     depends_on:
-      - zookeeper
+      kafka-init:
+        condition: service_completed_successfully
+      zookeeper:
+        condition: service_healthy
+    restart: on-failure
     ports:
       - "9092:9092"
     networks:
@@ -39,6 +63,58 @@ services:
       timeout: 10s
       retries: 10
 
+  kafka-connect:
+    image: debezium/connect:2.7.3.Final
+    hostname: kafka-connect
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8083:8083"
+    networks:
+      - app-network
+    environment:
+      BOOTSTRAP_SERVERS: kafka:29092
+      GROUP_ID: debezium-connect-group
+      CONFIG_STORAGE_TOPIC: debezium_configs
+      OFFSET_STORAGE_TOPIC: debezium_offsets
+      STATUS_STORAGE_TOPIC: debezium_statuses
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/connectors"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  debezium-init:
+    image: alpine:3.19
+    depends_on:
+      kafka-connect:
+        condition: service_healthy
+    networks:
+      - app-network
+    env_file:
+      - .env
+    volumes:
+      - ./debezium:/debezium-config
+    entrypoint:
+      - sh
+      - -c
+      - |
+          apk add --no-cache curl gettext
+          echo 'Generating connector config from template...'
+          envsubst < /debezium-config/postgres-connector.json > /tmp/connector.json
+          echo 'Generated config:'
+          cat /tmp/connector.json
+          echo 'Registering Debezium Postgres connector...'
+          curl -s -X POST http://kafka-connect:8083/connectors \
+            -H "Content-Type: application/json" \
+            -d @/tmp/connector.json
+          echo ''
+          echo 'Connector registered successfully.'
+
   spark-master:
     image: apache/spark:3.5.1
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
@@ -58,28 +134,12 @@ services:
     ports:
       - "8082:8081"
 
-  producer-app:
-    build:
-      context: .
-      dockerfile: dockerfiles/producer.Dockerfile
-    networks:
-      - app-network
-    depends_on:
-      kafka:
-        condition: service_healthy
-    volumes:
-      - ./csvs:/app/csvs
-
   streaming-app:
     build:
       context: .
       dockerfile: dockerfiles/spark_app.Dockerfile
     env_file:
       - .env
-    environment:
-      - KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS}
-      - DB_HOST=${DB_HOST}
-      - DB_NAME=${DB_NAME}
     networks:
       - app-network
     depends_on:
@@ -87,13 +147,17 @@ services:
         condition: service_healthy
       spark-master:
         condition: service_started
+      debezium-init:
+        condition: service_completed_successfully
     volumes:
       - ./checkpoints:/app/checkpoints
-    entrypoint: >
-      /opt/spark/bin/spark-submit 
-      --master spark://spark-master:7077 
-      --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,org.postgresql:postgresql:42.7.2
-      /app/spark_app.py
+    entrypoint:
+      - /opt/spark/bin/spark-submit
+      - --master
+      - spark://spark-master:7077
+      - --packages
+      - org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,org.postgresql:postgresql:42.7.2
+      - /app/spark_app.py
 
 networks:
   app-network:
