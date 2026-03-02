@@ -3,56 +3,28 @@ version: '3'
 dotenv: ['.env']
 
 vars:
-  DB_IMAGE: csv-to-db
-  COMPOSE_FILE: compose.yml
+  MAIN: compose.yml
+  LOAD: load-compose.yml
 
 tasks:
 
-  # Setup
-  setup:
-    desc: "First time setup - build everything"
-    cmds:
-      - task: build
-      - task: db-load
 
-  # Database
-  db-load:
-    desc: "Load all CSV files into Postgres (run once)"
+  load:
+    desc: "Load CSVs into source DB (run once)"
     cmds:
-      - docker build -f dockerfiles/csv_to_db.Dockerfile -t {{.DB_IMAGE}} .
-      - docker run --rm
-          -v ./csvs:/app/csvs
-          -e DB_HOST=host.docker.internal
-          -e DB_NAME={{.DB_NAME}}
-          -e DB_USER={{.DB_USER}}
-          -e DB_PASS={{.DB_PASS}}
-          {{.DB_IMAGE}}
+      - docker compose -f {{.LOAD}} up --build --remove-orphans
+      - docker compose -f {{.LOAD}} down --remove-orphans
 
-  db-connect:
-    desc: "Connect to Postgres via psql"
-    cmds:
-      - psql -h localhost -U {{.DB_USER}} -d {{.DB_NAME}}
-
-  db-tables:
-    desc: "List all tables in the database"
-    cmds:
-      - psql -h localhost -U {{.DB_USER}} -d {{.DB_NAME}} -c "\dt"
-
-  # Docker Compose
-  build:
-    desc: "Build all Docker images"
-    cmds:
-      - docker compose -f {{.COMPOSE_FILE}} build
 
   up:
-    desc: "Start all services (Kafka, Spark, Producer, Streaming)"
+    desc: "Start all services"
     cmds:
-      - docker compose -f {{.COMPOSE_FILE}} up -d
+      - docker compose -f {{.MAIN}} up -d --remove-orphans
 
   down:
     desc: "Stop all services"
     cmds:
-      - docker compose -f {{.COMPOSE_FILE}} down
+      - docker compose -f {{.MAIN}} down --remove-orphans
 
   restart:
     desc: "Restart all services"
@@ -60,42 +32,75 @@ tasks:
       - task: down
       - task: up
 
-  # Logs
-  logs:
-    desc: "Show logs for all services"
+  build:
+    desc: "Rebuild images"
     cmds:
-      - docker compose -f {{.COMPOSE_FILE}} logs -f
+      - docker compose -f {{.MAIN}} build
 
-  logs-producer:
-    desc: "Show producer logs"
+
+  logs:
+    desc: "All logs"
     cmds:
-      - docker compose -f {{.COMPOSE_FILE}} logs -f producer-app
+      - docker compose -f {{.MAIN}} logs -f
 
   logs-spark:
-    desc: "Show spark streaming logs"
+    desc: "Spark streaming logs"
     cmds:
-      - docker compose -f {{.COMPOSE_FILE}} logs -f streaming-app
+      - docker compose -f {{.MAIN}} logs -f streaming-app
 
   logs-kafka:
-    desc: "Show kafka logs"
+    desc: "Kafka logs"
     cmds:
-      - docker compose -f {{.COMPOSE_FILE}} logs -f kafka
+      - docker compose -f {{.MAIN}} logs -f kafka
 
-  # Status
+  logs-debezium:
+    desc: "Debezium connector logs"
+    cmds:
+      - docker compose -f {{.MAIN}} logs -f kafka-connect
+
+
   status:
-    desc: "Show status of all containers"
+    desc: "Container status"
     cmds:
-      - docker compose -f {{.COMPOSE_FILE}} ps
+      - docker compose -f {{.MAIN}} ps
 
-  # Cleanup 
-  clean:
-    desc: "Stop services and remove volumes"
-    prompt: "This will delete all Kafka and Zookeeper data. Continue?"
+  connector:
+    desc: "Check Debezium connector status"
     cmds:
-      - docker compose -f {{.COMPOSE_FILE}} down -v
+      - curl -s http://localhost:8083/connectors/postgres-connector/status | python -m json.tool
+
+
+  db-source:
+    desc: "Connect to source DB (niwa)"
+    cmds:
+      - psql -h localhost -U {{.DB_USER}} -d niwa
+
+  db-silver:
+    desc: "Connect to silver DB (ecommerce_db)"
+    cmds:
+      - psql -h localhost -U {{.DB_USER}} -d {{.DB_NAME}}
+
+  refresh-gold:
+    desc: "Manually refresh all gold materialized views"
+    cmds:
+      - psql -h localhost -U {{.DB_USER}} -d {{.DB_NAME}} -c "
+          REFRESH MATERIALIZED VIEW gold_sales_monthly;
+          REFRESH MATERIALIZED VIEW gold_sales_daily;
+          REFRESH MATERIALIZED VIEW gold_customer_metrics;
+          REFRESH MATERIALIZED VIEW gold_product_performance;
+          REFRESH MATERIALIZED VIEW gold_seller_performance;
+          REFRESH MATERIALIZED VIEW gold_delivery_analytics;
+          REFRESH MATERIALIZED VIEW gold_payment_analytics;
+        "
+
+  clean:
+    desc: "Stop and remove all volumes"
+    prompt: "This will delete all Kafka, Zookeeper and Spark data. Continue?"
+    cmds:
+      - docker compose -f {{.MAIN}} down -v --remove-orphans
 
   clean-checkpoints:
-    desc: "Delete Spark checkpoints (use if restreaming from scratch)"
-    prompt: "This will delete all checkpoints. Duplicate data may occur. Continue?"
+    desc: "Clear Spark checkpoints (restream from scratch)"
+    prompt: "Duplicate data may occur. Continue?"
     cmds:
       - rm -rf ./checkpoints/*
