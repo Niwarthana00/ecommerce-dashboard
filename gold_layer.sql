@@ -19,8 +19,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_gold_sales_monthly_month
     ON gold_sales_monthly (month);
 
 
--- ── Daily Sales Summary ───────────────────────────────
--- Dashboard: Day-level granularity for recent trends
 CREATE MATERIALIZED VIEW IF NOT EXISTS gold_sales_daily AS
 SELECT
     DATE_TRUNC('day', o.order_purchase_timestamp)    AS day,
